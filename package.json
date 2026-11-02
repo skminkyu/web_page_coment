@@ -1,0 +1,14 @@
+{
+  "name": "web-page-comment",
+  "version": "1.0.0",
+  "description": "상세페이지 주석 검토 – 제품/차수별 이미지·HTML·소스코드 업로드, 박스/핀 주석, 차수 완료, 읽기전용 공유, 매일 21시 자동 백업",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/server.test.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}
