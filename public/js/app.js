@@ -126,22 +126,28 @@
   }
 
   function roundKeys(p) { return Object.keys(p.rounds || {}).sort(function (a, b) { return a - b; }); }
-  function isAllDone(p) {
-    var withData = roundKeys(p).filter(function (k) { return p.rounds[k] && p.rounds[k].pageCount > 0; });
-    return withData.length > 0 && withData.every(function (k) { return p.rounds[k].completed; });
+  /** 완료 제품: 어느 차수든 '완료' 값이 지정되어 있으면 완료로 본다 */
+  function isDone(p) {
+    if (typeof p.completed === 'boolean') return p.completed;
+    return roundKeys(p).some(function (k) { return p.rounds[k] && p.rounds[k].completed; });
   }
+  function doneRounds(p) { return roundKeys(p).filter(function (k) { return p.rounds[k] && p.rounds[k].completed; }); }
 
   function renderProducts() {
     var grid = $('productGrid');
     var q = $('searchInput').value.trim().toLowerCase();
     var list = products.filter(function (p) {
       if (q && p.name.toLowerCase().indexOf(q) < 0) return false;
-      var done = isAllDone(p);
+      var done = isDone(p);
       if (filter === 'done') return done;
       if (filter === 'progress') return !done;
       return true;
     });
+    var doneCount = products.filter(isDone).length;
     $('productCount').textContent = products.length ? products.length + '개' : '';
+    $('filterSeg').querySelector('[data-filter="done"]').textContent = '완료 ' + doneCount;
+    $('filterSeg').querySelector('[data-filter="progress"]').textContent = '진행 중 ' + (products.length - doneCount);
+    $('completedBackupBtn').classList.toggle('hidden', filter !== 'done' || !doneCount);
     if (!products.length) {
       grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="icon">📦</div><h3>등록된 제품이 없습니다</h3><p>제품을 추가하고 차수별로 상세페이지를 올려 주석을 달아보세요.</p><button class="btn btn-primary" id="emptyAdd">＋ 첫 제품 추가</button></div>';
       $('emptyAdd').onclick = createProduct;
@@ -156,14 +162,14 @@
   }
 
   function productCard(p) {
-    var done = isAllDone(p);
+    var done = isDone(p);
     var keys = roundKeys(p);
     var thumbFile = null;
     keys.forEach(function (k) { if (!thumbFile && p.rounds[k] && p.rounds[k].firstFile) thumbFile = p.rounds[k].firstFile; });
     var card = U.el(
       '<div class="product-card' + (done ? ' all-done' : '') + '">' +
         '<div class="pc-head">' +
-          (thumbFile ? '<img src="' + U.fileUrl(thumbFile) + '" alt="" style="width:42px;height:52px;object-fit:cover;object-position:top;border-radius:7px;border:1px solid var(--border);flex-shrink:0">' : '<div style="width:42px;height:52px;border-radius:7px;background:var(--surface-3);display:grid;place-items:center;flex-shrink:0;font-size:18px">🗂</div>') +
+          (thumbFile ? '<img loading="lazy" decoding="async" src="' + U.thumbUrl(thumbFile) + '" alt="" style="width:42px;height:52px;object-fit:cover;object-position:top;border-radius:7px;border:1px solid var(--border);flex-shrink:0">' : '<div style="width:42px;height:52px;border-radius:7px;background:var(--surface-3);display:grid;place-items:center;flex-shrink:0;font-size:18px">🗂</div>') +
           '<div class="pc-title"><div class="pc-name"></div><div class="pc-meta"></div></div>' +
           '<div class="pc-actions">' +
             '<button class="btn btn-sm btn-ghost btn-icon" data-act="rename" title="이름 변경">✏️</button>' +
@@ -171,7 +177,7 @@
           '</div>' +
         '</div>' +
         '<div class="pc-rounds"></div>' +
-        '<div class="pc-foot"><span class="grow">' + (done ? '<span class="pill success">✓ 전체 완료</span>' : '') + '</span>' +
+        '<div class="pc-foot"><span class="grow">' + (done ? '<span class="pill success">✓ 완료 (' + doneRounds(p).map(function (k) { return k + '차'; }).join('·') + ')</span>' : '') + '</span>' +
           '<button class="btn btn-sm" data-act="share">🔗 공유 링크</button>' +
           '<button class="btn btn-sm btn-primary" data-act="open">열기</button>' +
         '</div>' +
@@ -649,9 +655,9 @@
       var t = document.createElement('div');
       t.className = 'thumb' + (i === Ed.idx ? ' active' : '');
       t.title = (i + 1) + '. ' + (p.name || '');
-      if (p.type === 'image') t.innerHTML = '<img loading="lazy" src="' + U.fileUrl(p.file) + '" alt="">';
+      if (p.type === 'image') t.innerHTML = '<img loading="lazy" decoding="async" src="' + U.thumbUrl(p.file) + '" alt="">';
       else t.innerHTML = (p.type === 'html' ? '🌐' : '📄') + '<span class="t-kind">' + (p.type === 'html' ? 'HTML' : 'CODE') + '</span>';
-      t.innerHTML += '<span class="t-num">' + (i + 1) + '</span>' + (p.annotations.length ? '<span class="t-cnt">' + p.annotations.length + '</span>' : '');
+      t.innerHTML += '<span class="t-num">' + (i + 1) + '</span><span class="t-cnt"' + (p.annotations.length ? '' : ' hidden') + '>' + p.annotations.length + '</span>';
       t.onclick = function () { if (i !== Ed.idx) Ed.showPage(i); };
       if (Ed.editable()) {
         t.draggable = true;
@@ -675,6 +681,17 @@
     });
     var active = wrap.querySelector('.thumb.active');
     if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  };
+
+  /** 주석 수 배지만 갱신 (썸네일 이미지를 다시 그리지 않아 빠름) */
+  Ed.updateThumbCounts = function () {
+    var thumbsEls = $('thumbs').querySelectorAll('.thumb');
+    if (thumbsEls.length !== Ed.pages.length) { Ed.renderThumbs(); return; }
+    Ed.pages.forEach(function (p, i) {
+      var c = thumbsEls[i].querySelector('.t-cnt');
+      c.textContent = p.annotations.length;
+      c.hidden = !p.annotations.length;
+    });
   };
 
   // ── 주석 오버레이 ──
@@ -795,7 +812,7 @@
     Ed.selectedId = a.id;
     Ed.renderOverlay();
     Ed.renderList();
-    Ed.renderThumbs();
+    Ed.updateThumbCounts();
     Ed.select(a.id, true);
   };
 
@@ -806,12 +823,12 @@
     var removed = page.annotations.splice(i, 1)[0];
     Ed.markDirty();
     Ed.selectedId = null;
-    Ed.renderOverlay(); Ed.renderList(); Ed.renderThumbs();
+    Ed.renderOverlay(); Ed.renderList(); Ed.updateThumbCounts();
     U.toast('주석 #' + removed.number + ' 을 삭제했습니다.', 'info', {
       action: { label: '되돌리기', onClick: function () {
         if (Ed.page() !== page) return;
         page.annotations.splice(i, 0, removed);
-        Ed.markDirty(); Ed.renderOverlay(); Ed.renderList(); Ed.renderThumbs();
+        Ed.markDirty(); Ed.renderOverlay(); Ed.renderList(); Ed.updateThumbCounts();
       } },
     });
   };
@@ -1216,6 +1233,27 @@
   // ══════════════════════════════════════════════════════
   //  백업 관리
   // ══════════════════════════════════════════════════════
+  /** 완료 제품만 따로 백업 → 다운로드 안내 */
+  async function backupCompleted() {
+    var n = products.filter(isDone).length;
+    var ok = await U.confirm('완료 제품만 따로 백업', '<p>완료 값이 지정된 제품 <b>' + n + '개</b>(모든 차수·이미지·주석 포함)를 별도 백업으로 저장합니다.</p><p class="hint">완료 제품 백업은 자동으로 지워지지 않으며, [백업 관리]에서 언제든 다운로드하거나 되살릴 수 있습니다. 되살릴 때는 백업에 들어 있는 제품만 복원되고 다른 제품은 그대로 유지됩니다.</p>', '백업하기', 'info');
+    if (!ok) return null;
+    var t = U.toast('완료 제품 백업 중…', 'info', { duration: 0 });
+    try {
+      var m = await U.api('POST', '/api/backups', { scope: 'completed' }, { timeout: 300000 });
+      t.close();
+      loadStatus();
+      var dl = await U.modal({
+        title: '완료 제품 백업 완료', tone: 'success',
+        html: '<p>완료 제품 <b>' + m.productCount + '개</b> · 페이지 ' + m.pageCount + ' · 주석 ' + m.annotCount + ' (' + U.fmtBytes(m.bytes) + ')를 백업했습니다.</p><p class="hint">백업 이름: ' + U.esc(m.name) + '</p>',
+        buttons: [{ label: '닫기', value: false }, { label: 'PC로 다운로드', value: true, kind: 'primary' }],
+      });
+      if (dl) location.href = '/api/backups/' + encodeURIComponent(m.name) + '/download';
+      return m;
+    } catch (e) { t.close(); U.showError('완료 제품을 백업하지 못했습니다', e); return null; }
+  }
+  $('completedBackupBtn').onclick = backupCompleted;
+
   async function openBackupModal() {
     var node = U.el('<div><div id="bkStatus">불러오는 중…</div><div class="section-title">백업 목록</div><div id="bkList"></div>' +
       '<div class="section-title">기존 시스템 데이터 가져오기</div>' +
@@ -1233,23 +1271,29 @@
           '<dt>다음 자동 백업</dt><dd>' + U.fmtDate(s.nextRun, true, s.timezone) + '</dd>' +
           '<dt>마지막 백업</dt><dd>' + (s.last ? U.fmtDate(s.last.createdAt, true, s.timezone) + ' (' + U.fmtRelative(s.last.createdAt) + ')' : '없음') + '</dd>' +
           (s.lastError ? '<dt>최근 오류</dt><dd style="color:var(--danger)">' + U.esc(s.lastError.message) + '</dd>' : '') +
-          '</dl><button class="btn btn-primary btn-sm" id="bkNow">지금 백업하기</button>';
+          '</dl><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" id="bkNow">지금 전체 백업하기</button><button class="btn btn-sm" id="bkDone">완료 제품만 따로 백업</button></div>';
+        node.querySelector('#bkDone').onclick = async function () {
+          if (!products.length) await loadProducts();
+          if (await backupCompleted()) render();
+        };
         node.querySelector('#bkNow').onclick = async function () {
           this.disabled = true;
           try { var m = await U.api('POST', '/api/backups', undefined, { timeout: 300000 }); U.toast('백업 완료: ' + m.name, 'success'); render(); loadStatus(); }
           catch (e) { U.showError('백업하지 못했습니다', e); this.disabled = false; }
         };
-        var kindLabel = { auto: '자동', manual: '수동', 'pre-restore': '복원 직전', 'pre-import': '가져오기 직전' };
+        var kindLabel = { auto: '자동', manual: '수동', completed: '완료 제품', 'pre-restore': '복원 직전', 'pre-import': '가져오기 직전' };
         var lb = node.querySelector('#bkList');
         if (!r.list.length) { lb.innerHTML = '<div class="sb-empty">아직 백업이 없습니다.</div>'; return; }
         lb.innerHTML = '<table class="table"><thead><tr><th>시각</th><th>종류</th><th>내용</th><th></th></tr></thead><tbody></tbody></table>';
         r.list.forEach(function (b) {
-          var tr = U.el('<tr><td>' + U.fmtDate(b.createdAt, true, r.status.timezone) + '</td><td><span class="pill ' + (b.kind === 'auto' ? 'primary' : '') + '">' + (kindLabel[b.kind] || b.kind) + '</span></td>' +
-            '<td class="hint">제품 ' + b.productCount + ' · 페이지 ' + b.pageCount + ' · 주석 ' + b.annotCount + '<br>' + U.fmtBytes(b.bytes) + '</td>' +
+          var tr = U.el('<tr><td>' + U.fmtDate(b.createdAt, true, r.status.timezone) + '</td><td><span class="pill ' + (b.kind === 'auto' ? 'primary' : b.kind === 'completed' ? 'success' : '') + '">' + (kindLabel[b.kind] || b.kind) + '</span></td>' +
+            '<td class="hint">' + (b.kind === 'completed' ? '<b style="color:var(--success)">완료 제품만</b> · ' : '') + '제품 ' + b.productCount + ' · 페이지 ' + b.pageCount + ' · 주석 ' + b.annotCount + '<br>' + U.fmtBytes(b.bytes) + '</td>' +
             '<td class="actions"><a class="btn btn-sm" href="/api/backups/' + encodeURIComponent(b.name) + '/download">다운로드</a><button class="btn btn-sm" data-a="restore">복원</button>' +
             (b.kind !== 'auto' ? '<button class="btn btn-sm btn-ghost btn-icon" data-a="del" title="삭제">🗑</button>' : '') + '</td></tr>');
           tr.querySelector('[data-a="restore"]').onclick = async function () {
-            var ok = await U.confirm('이 백업으로 복원할까요?', '<p><b>' + U.fmtDate(b.createdAt) + '</b> 시점(제품 ' + b.productCount + '개)으로 전체 데이터를 되돌립니다.</p><p>복원 직전 현재 상태는 자동으로 “복원 직전” 백업으로 보관되므로 다시 되돌릴 수 있습니다.</p>', '복원', 'danger');
+            var ok = b.scope === 'partial'
+              ? await U.confirm('완료 제품 백업에서 되살릴까요?', '<p>이 백업에 들어 있는 제품 <b>' + b.productCount + '개</b>만 백업 시점 상태로 되살립니다. 다른 제품은 그대로 유지됩니다.</p><p>복원 직전 현재 상태는 자동으로 백업됩니다.</p>', '되살리기', 'danger')
+              : await U.confirm('이 백업으로 복원할까요?', '<p><b>' + U.fmtDate(b.createdAt) + '</b> 시점(제품 ' + b.productCount + '개)으로 전체 데이터를 되돌립니다.</p><p>복원 직전 현재 상태는 자동으로 “복원 직전” 백업으로 보관되므로 다시 되돌릴 수 있습니다.</p>', '복원', 'danger');
             if (!ok) return;
             try { await U.api('POST', '/api/backups/' + encodeURIComponent(b.name) + '/restore', undefined, { timeout: 300000 }); U.toast('복원했습니다.', 'success'); render(); loadStatus(); loadProducts(); }
             catch (e) { U.showError('복원하지 못했습니다', e); }

@@ -218,6 +218,8 @@
   };
 
   U.fileUrl = function (file) { return '/files/' + file; };
+  /** 목록·썸네일용 작은 이미지 (서버가 만들 수 없으면 원본으로 자동 전환) */
+  U.thumbUrl = function (file) { return '/thumbs/' + file; };
 
   // ── 페이지 콘텐츠 렌더링 ──
   var textCache = {};
@@ -246,6 +248,7 @@
     if (page.type === 'image') {
       var img = new Image();
       img.className = 'pg-img';
+      img.decoding = 'async';
       img.alt = page.name || '';
       img.draggable = false;
       img.onload = function () { if (alive()) cb.onReady && cb.onReady(img); };

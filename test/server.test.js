@@ -230,3 +230,61 @@ test('APP_PASSWORD 설정 시 편집 API 보호, 공유 링크는 공개', async
     assert.strictEqual((await s.req('GET', '/api/products', undefined, { Cookie: cookie })).status, 200);
   } finally { await s.close(); }
 });
+
+test('완료 판정: 어느 차수든 완료 값이 있으면 완료 제품', async () => {
+  const s = await start(tmpDir());
+  try {
+    const { p } = await seed(s);
+    assert.strictEqual((await s.req('GET', '/api/products')).data[0].completed, false);
+    await s.req('PATCH', `/api/products/${p.id}/rounds/2/complete`, { completed: true }); // 내용 없는 2차만 완료
+    assert.strictEqual((await s.req('GET', '/api/products')).data[0].completed, true);
+  } finally { await s.close(); }
+});
+
+test('완료 제품만 따로 백업 → 다른 제품은 건드리지 않고 되살리기', async () => {
+  const dir = tmpDir();
+  const s = await start(dir);
+  try {
+    const { p } = await seed(s);
+    const other = (await s.req('POST', '/api/products', { name: '진행중 제품' })).data;
+    assert.strictEqual((await s.req('POST', '/api/backups', { scope: 'completed' })).status, 400, '완료 제품이 없으면 거부');
+    await s.req('PATCH', `/api/products/${p.id}/rounds/1/complete`, { completed: true });
+    const b = await s.req('POST', '/api/backups', { scope: 'completed' });
+    assert.strictEqual(b.status, 200, JSON.stringify(b.data));
+    assert.strictEqual(b.data.kind, 'completed');
+    assert.strictEqual(b.data.productCount, 1);
+    assert.strictEqual(b.data.fileCount, 1);
+    const db = JSON.parse(fs.readFileSync(path.join(dir, 'backups', b.data.name, 'db.json'), 'utf8'));
+    assert.deepStrictEqual(Object.keys(db.products), [p.id]);
+
+    // 완료 제품 영구 삭제 후, 완료 백업에서 되살리기 → 다른 제품은 유지
+    await s.req('DELETE', `/api/products/${p.id}`);
+    await s.req('DELETE', `/api/products/${p.id}?permanent=1`);
+    const r = await s.req('POST', `/api/backups/${b.data.name}/restore`);
+    assert.strictEqual(r.status, 200, JSON.stringify(r.data));
+    assert.strictEqual(r.data.merged, 1);
+    const names = (await s.req('GET', '/api/products')).data.map(x => x.name).sort();
+    assert.deepStrictEqual(names, ['진행중 제품', '테스트 제품']);
+    assert.ok(other.id);
+    // 자동 정리 대상이 아님
+    s.app.backups.prune();
+    assert.ok(s.app.backups.list().some(m => m.name === b.data.name));
+  } finally { await s.close(); }
+});
+
+test('썸네일: 작은 webp 생성 (sharp 없으면 원본으로 이동)', async () => {
+  const s = await start(tmpDir());
+  try {
+    const { up } = await seed(s);
+    const res = await fetch(s.base + '/thumbs/' + up.file, { redirect: 'manual' });
+    if (s.app.thumbs.available) {
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.headers.get('content-type'), 'image/webp');
+    } else {
+      assert.strictEqual(res.status, 302);
+    }
+    const txt = (await s.req('POST', '/api/files?name=a.css', Buffer.from('a{}'))).data;
+    const r2 = await fetch(s.base + '/thumbs/' + txt.file, { redirect: 'manual' });
+    assert.strictEqual(r2.status, 302, '이미지가 아니면 원본으로');
+  } finally { await s.close(); }
+});

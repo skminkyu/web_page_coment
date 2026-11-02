@@ -368,3 +368,4 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; line-height
   .url-box .input { width: 150px; }
   .search { width: 100%; }
 }
+.thumb .t-cnt[hidden] { display: none; }

@@ -82,7 +82,7 @@
     pages.forEach(function (p, i) {
       var t = document.createElement('div');
       t.className = 'thumb' + (i === idx ? ' active' : '');
-      if (p.type === 'image') t.innerHTML = '<img loading="lazy" src="' + U.fileUrl(p.file) + '" alt="">';
+      if (p.type === 'image') t.innerHTML = '<img loading="lazy" decoding="async" src="' + U.thumbUrl(p.file) + '" alt="">';
       else t.innerHTML = (p.type === 'html' ? '🌐' : '📄') + '<span class="t-kind">' + (p.type === 'html' ? 'HTML' : 'CODE') + '</span>';
       t.innerHTML += '<span class="t-num">' + (i + 1) + '</span>' + ((p.annotations || []).length ? '<span class="t-cnt">' + p.annotations.length + '</span>' : '');
       t.onclick = function () { showPage(i); };
