@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>로그인 – 상세페이지 주석 검토</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body style="display:grid;place-items:center;min-height:100vh;padding:16px">
+  <form id="f" style="width:min(360px,100%);background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px;box-shadow:var(--shadow)">
+    <div class="brand" style="margin-bottom:18px"><div class="brand-mark">✎</div>상세페이지 주석 검토</div>
+    <label style="font-size:13px;color:var(--text-2)">비밀번호</label>
+    <input class="input" type="password" id="pw" style="width:100%;margin:6px 0 12px" autofocus autocomplete="current-password" />
+    <div id="err" style="color:var(--danger);font-size:13px;min-height:20px"></div>
+    <button class="btn btn-primary" style="width:100%">로그인</button>
+  </form>
+  <script>
+    document.getElementById('f').onsubmit = function (e) {
+      e.preventDefault();
+      fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('pw').value }) })
+        .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || '로그인 실패'); }); })
+        .then(function () { location.reload(); })
+        .catch(function (err) { document.getElementById('err').textContent = err.message; });
+    };
+  </script>
+</body>
+</html>
