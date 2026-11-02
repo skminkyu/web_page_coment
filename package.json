@@ -9,6 +9,9 @@
     "test": "node --test test/server.test.js"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": "20.x"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.33.5"
   }
 }

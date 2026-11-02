@@ -6,13 +6,15 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { Store, emptyRound } = require('./lib/store');
 const { FileStore } = require('./lib/files');
 const { BackupManager } = require('./lib/backup');
 const { fetchRemote } = require('./lib/remote');
 const { HttpError } = require('./lib/util');
-const { sanitizePages, productSummary, roundMeta, sortedRoundKeys } = require('./lib/model');
+const { sanitizePages, productSummary, roundMeta, sortedRoundKeys, isProductCompleted } = require('./lib/model');
 const legacy = require('./lib/legacy');
+const { Thumbs } = require('./lib/thumbs');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const STATIC_MIME = {
@@ -52,13 +54,23 @@ function createApp(opts = {}) {
     keep: Number(process.env.BACKUP_KEEP) || 30,
   });
   store.load(() => backups.dbCandidates());
+  const thumbs = new Thumbs(dataDir, files, log);
   const warning = opts.storageWarning !== undefined ? opts.storageWarning : storageWarning(dataDir);
   const jobs = new Map();
 
   // ── helpers ──
   function send(res, status, data, headers) {
-    res.writeHead(status, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, headers || {}));
-    res.end(JSON.stringify(data));
+    const body = JSON.stringify(data);
+    const h = Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', Vary: 'Accept-Encoding' }, headers || {});
+    const accept = String((res.req && res.req.headers['accept-encoding']) || '');
+    if (body.length > 2048 && /\bgzip\b/.test(accept)) {
+      h['Content-Encoding'] = 'gzip';
+      res.writeHead(status, h);
+      res.end(zlib.gzipSync(body, { level: 5 }));
+      return;
+    }
+    res.writeHead(status, h);
+    res.end(body);
   }
 
   function readBody(req, limit) {
@@ -124,6 +136,7 @@ function createApp(opts = {}) {
       storageWarning: warning,
       dataDir: opts.hideDataDir ? undefined : dataDir,
       maxUploadMB: Math.round(maxUploadBytes / 1048576),
+      thumbnails: thumbs.available,
       backup: backups.status(),
       authRequired: !!appPassword,
       serverTime: Date.now(),
@@ -132,13 +145,19 @@ function createApp(opts = {}) {
 
   function touchProduct(p) { p.updatedAt = Date.now(); }
 
+  /** 모든 이미지 페이지의 썸네일을 백그라운드에서 미리 만든다 (가져오기 직후 목록이 바로 빠르게 뜨도록) */
+  function pregenerateThumbs() {
+    Object.values(store.data.products).forEach(p => Object.values(p.rounds || {}).forEach(r =>
+      (r.pages || []).forEach(pg => { if (pg.type === 'image') thumbs.get(pg.file, 'thumb'); })));
+  }
+
   function startJob(fn) {
     const id = crypto.randomUUID();
     const job = { id, status: 'running', progress: null, result: null, error: null, startedAt: Date.now() };
     jobs.set(id, job);
     Promise.resolve()
       .then(() => fn(pr => { job.progress = pr; }))
-      .then(r => { job.status = 'done'; job.result = r; })
+      .then(r => { job.status = 'done'; job.result = r; pregenerateThumbs(); })
       .catch(e => { job.status = 'error'; job.error = e.message; log.error('[job]', e); });
     return job;
   }
@@ -161,6 +180,13 @@ function createApp(opts = {}) {
         'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
       });
       return fs.createReadStream(files.pathOf(mt[1])).pipe(res);
+    }
+    if (m === 'GET' && (mt = p.match(/^\/thumbs\/([a-f0-9]{64}\.[a-z0-9]{1,8})$/))) {
+      // 작은 썸네일 (목록·썸네일 스트립용). 만들 수 없으면 원본으로 넘긴다.
+      const out = await thumbs.get(mt[1], 'thumb');
+      if (!out) { res.writeHead(302, { Location: '/files/' + mt[1], 'Cache-Control': 'no-store' }); return res.end(); }
+      res.writeHead(200, { 'Content-Type': 'image/webp', 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+      return fs.createReadStream(out).pipe(res);
     }
     if (m === 'GET' && (mt = p.match(/^\/s\/([A-Za-z0-9_-]{8,64})$/))) return serveStatic(res, 'viewer.html');
     if (m === 'GET' && (mt = p.match(/^\/api\/public\/share\/([A-Za-z0-9_-]{8,64})$/))) {
@@ -321,7 +347,9 @@ function createApp(opts = {}) {
       const name = String(u.searchParams.get('name') || 'file').slice(0, 200);
       const buf = await readBody(req, maxUploadBytes);
       try {
-        return send(res, 200, files.save(buf, name));
+        const saved = files.save(buf, name);
+        if (saved.kind === 'image') thumbs.get(saved.file, 'thumb'); // 썸네일 미리 생성 (기다리지 않음)
+        return send(res, 200, saved);
       } catch (e) {
         if (e instanceof HttpError) throw e;
         throw new HttpError(507, '서버에 파일을 저장하지 못했습니다 (' + (e.code || e.message) + ').', 'DISK_WRITE_FAILED');
@@ -345,8 +373,13 @@ function createApp(opts = {}) {
     if (p === '/api/backups' && m === 'GET') return send(res, 200, { status: backups.status(), list: backups.list() });
     if (p === '/api/backups' && m === 'POST') {
       if (store.safeMode) throw new HttpError(503, '안전 모드에서는 새 백업을 만들 수 없습니다 (기존 백업 보호).', 'SAFE_MODE');
-      const meta = backups.create('manual');
-      return send(res, 200, meta);
+      const body = await readJson(req);
+      if (body.scope === 'completed') {
+        const ids = Object.values(store.data.products).filter(x => !x.deletedAt && isProductCompleted(x)).map(x => x.id);
+        if (!ids.length) throw new HttpError(400, '완료 처리된 제품이 없습니다.', 'NO_COMPLETED');
+        return send(res, 200, backups.create('completed', null, { productIds: ids }));
+      }
+      return send(res, 200, backups.create('manual'));
     }
     if ((mt = p.match(/^\/api\/backups\/([\w-]+)\/download$/)) && m === 'GET') { await backups.download(mt[1], res); return; }
     if ((mt = p.match(/^\/api\/backups\/([\w-]+)\/restore$/)) && m === 'POST') return send(res, 200, backups.restore(mt[1]));
@@ -393,7 +426,7 @@ function createApp(opts = {}) {
   });
   server.requestTimeout = 10 * 60 * 1000;
 
-  return { server, store, files, backups, dataDir };
+  return { server, store, files, backups, thumbs, dataDir };
 }
 
 if (require.main === module) {
